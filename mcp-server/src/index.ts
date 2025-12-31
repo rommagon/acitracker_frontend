@@ -2,14 +2,22 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   Tool
 } from '@modelcontextprotocol/sdk/types.js';
+import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
+import express from 'express';
 import { z } from 'zod';
 import { BackendClient } from './backend-client.js';
 import type { BriefingRequest, ExplainPaperRequest } from './types.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const ExplainPaperRequestSchema = z.object({
   paper_id: z.string().min(1),
@@ -180,10 +188,93 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-async function main() {
+async function startHttpServer() {
+  const PORT = process.env.PORT || 3000;
+
+  // Create Express app with MCP support (includes DNS rebinding protection for localhost)
+  const app = createMcpExpressApp({ host: '0.0.0.0' });
+
+  // Health check endpoint
+  app.get('/health', (req, res) => {
+    res.json({ ok: true });
+  });
+
+  // Root endpoint
+  app.get('/', (req, res) => {
+    res.send('AciTrack MCP Server is running');
+  });
+
+  // Serve UI static files
+  const uiDistPath = path.join(__dirname, '../../ui/dist');
+  app.use('/ui', express.static(uiDistPath));
+
+  // Serve briefing.html as skybridge template
+  app.get('/ui/briefing.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html+skybridge');
+    res.sendFile(path.join(uiDistPath, 'index.html'));
+  });
+
+  // Store active SSE transports by session ID
+  const transports = new Map<string, SSEServerTransport>();
+
+  // SSE endpoint for MCP communication
+  app.get('/sse', async (req, res) => {
+    const transport = new SSEServerTransport('/message', res);
+
+    transport.onclose = () => {
+      transports.delete(transport.sessionId);
+      console.error(`SSE session closed: ${transport.sessionId}`);
+    };
+
+    transports.set(transport.sessionId, transport);
+    console.error(`SSE session started: ${transport.sessionId}`);
+
+    await transport.start();
+    await server.connect(transport);
+  });
+
+  // POST endpoint for MCP messages
+  app.post('/message', express.json(), async (req, res) => {
+    const sessionId = req.headers['x-session-id'] as string;
+
+    if (!sessionId) {
+      res.status(400).json({ error: 'Missing x-session-id header' });
+      return;
+    }
+
+    const transport = transports.get(sessionId);
+
+    if (!transport) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+
+    await transport.handlePostMessage(req, res);
+  });
+
+  // Start the server
+  app.listen(PORT, () => {
+    console.error(`AciTrack MCP Server listening on port ${PORT}`);
+    console.error(`Health check: http://localhost:${PORT}/health`);
+    console.error(`UI: http://localhost:${PORT}/ui/`);
+    console.error(`MCP SSE endpoint: http://localhost:${PORT}/sse`);
+  });
+}
+
+async function startStdioServer() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('AciTrack MCP Server running on stdio');
+}
+
+async function main() {
+  const transportMode = process.env.MCP_TRANSPORT || 'stdio';
+
+  if (transportMode === 'http' || transportMode === 'sse') {
+    await startHttpServer();
+  } else {
+    await startStdioServer();
+  }
 }
 
 main().catch((error) => {
