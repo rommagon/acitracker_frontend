@@ -240,22 +240,40 @@ async function startHttpServer() {
   });
 
   // POST endpoint for MCP messages
-  app.post('/message', express.json(), async (req, res) => {
-    const sessionId = req.headers['x-session-id'] as string;
+  // IMPORTANT: Do NOT use express.json() or any body parser here
+  // The SSE transport needs to read the raw request stream
+  app.post('/message', async (req, res) => {
+    try {
+      const sessionId = req.headers['x-session-id'] as string;
+      const contentType = req.headers['content-type'] as string;
 
-    if (!sessionId) {
-      res.status(400).json({ error: 'Missing x-session-id header' });
-      return;
+      console.error(`/message request - sessionId: ${sessionId}, content-type: ${contentType}`);
+
+      if (!sessionId) {
+        res.status(400).json({ ok: false, error: 'Missing x-session-id header' });
+        return;
+      }
+
+      const transport = transports.get(sessionId);
+
+      if (!transport) {
+        console.error(`/message error - session not found: ${sessionId}`);
+        res.status(404).json({ ok: false, error: 'Session not found' });
+        return;
+      }
+
+      // Let the SSE transport handle the raw request/response
+      await transport.handlePostMessage(req, res);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : '';
+      console.error(`/message error:`, errorMsg);
+      console.error(`Stack:`, errorStack);
+
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, error: errorMsg });
+      }
     }
-
-    const transport = transports.get(sessionId);
-
-    if (!transport) {
-      res.status(404).json({ error: 'Session not found' });
-      return;
-    }
-
-    await transport.handlePostMessage(req, res);
   });
 
   // Start the server
