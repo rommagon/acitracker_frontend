@@ -244,13 +244,14 @@ async function startHttpServer() {
   // The SSE transport needs to read the raw request stream
   app.post('/message', async (req, res) => {
     try {
-      const sessionId = req.headers['x-session-id'] as string;
+      // Accept sessionId from either header (preferred) or query parameter
+      const sessionId = (req.headers['x-session-id'] as string) || (req.query.sessionId as string);
       const contentType = req.headers['content-type'] as string;
 
       console.error(`/message request - sessionId: ${sessionId}, content-type: ${contentType}`);
 
       if (!sessionId) {
-        res.status(400).json({ ok: false, error: 'Missing x-session-id header' });
+        res.status(400).json({ ok: false, error: 'Missing sessionId (provide via x-session-id header or ?sessionId=... query parameter)' });
         return;
       }
 
