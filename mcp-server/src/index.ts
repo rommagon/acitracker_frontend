@@ -191,8 +191,148 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function startHttpServer() {
   const PORT = process.env.PORT || 3000;
 
-  // Create Express app with MCP support (includes DNS rebinding protection for localhost)
-  const app = createMcpExpressApp({ host: '0.0.0.0' });
+  // Create plain Express app to have full control over middleware
+  const app = express();
+
+  // Store active SSE transports and keepalive intervals by session ID
+  const transports = new Map<string, SSEServerTransport>();
+  const keepaliveIntervals = new Map<string, NodeJS.Timeout>();
+
+  console.error('=== EXPRESS MIDDLEWARE REGISTRATION ORDER ===');
+  console.error('1. MCP routes FIRST (NO body parsing middleware):');
+  console.error('   - GET /sse');
+  console.error('   - POST /message (raw stream, no middleware)');
+  console.error('2. Non-MCP routes AFTER (can use JSON middleware)');
+  console.error('=============================================');
+
+  // ============================================================================
+  // CRITICAL: MCP ENDPOINTS MUST BE REGISTERED FIRST (BEFORE ANY JSON MIDDLEWARE)
+  // ============================================================================
+
+  // SSE endpoint for MCP communication
+  app.get('/sse', async (req, res) => {
+    console.error(`[SSE] New connection request`);
+
+    // Create a new transport for this session
+    // The transport will send event: endpoint with /message?sessionId=...
+    const transport = new SSEServerTransport('/message', res);
+    const sessionId = transport.sessionId;
+
+    console.error(`[SSE] Session created: ${sessionId}`);
+
+    // Set up close handler to clean up resources
+    transport.onclose = () => {
+      // Clear keepalive interval
+      const interval = keepaliveIntervals.get(sessionId);
+      if (interval) {
+        clearInterval(interval);
+        keepaliveIntervals.delete(sessionId);
+      }
+
+      // Remove transport
+      transports.delete(sessionId);
+      console.error(`[SSE] Session closed: ${sessionId}`);
+    };
+
+    // Store transport BEFORE connecting
+    transports.set(sessionId, transport);
+
+    // Set up keepalive pings (every 15 seconds)
+    // Write SSE comment to keep connection alive
+    const interval = setInterval(() => {
+      try {
+        res.write(': ping\n\n');
+      } catch (err) {
+        console.error(`[SSE] Keepalive error for ${sessionId}:`, err);
+        clearInterval(interval);
+      }
+    }, 15000);
+    keepaliveIntervals.set(sessionId, interval);
+
+    // Connect to server
+    // IMPORTANT: Do NOT call transport.start() - server.connect() does it internally
+    await server.connect(transport);
+
+    console.error(`[SSE] Session ready: ${sessionId}`);
+  });
+
+  // POST endpoint for MCP messages
+  // CRITICAL: Do NOT use ANY body parsing middleware - let transport read raw stream
+  app.post('/message', async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+      // Accept sessionId from either header (preferred) or query parameter
+      const sessionIdFromHeader = req.headers['x-session-id'] as string;
+      const sessionIdFromQuery = req.query.sessionId as string;
+      const sessionId = sessionIdFromHeader || sessionIdFromQuery;
+      const sessionIdSource = sessionIdFromHeader ? 'header' : 'query';
+
+      const contentType = req.headers['content-type'] as string;
+
+      console.error(`[/message] Request received:`, {
+        sessionId,
+        sessionIdSource,
+        contentType,
+        streamReadable: req.readable
+      });
+
+      if (!sessionId) {
+        console.error(`[/message] ERROR: Missing sessionId`);
+        res.status(400).json({
+          ok: false,
+          error: 'Missing sessionId (provide via x-session-id header or ?sessionId=... query parameter)'
+        });
+        return;
+      }
+
+      const transport = transports.get(sessionId);
+
+      if (!transport) {
+        console.error(`[/message] ERROR: Session not found: ${sessionId}`);
+        console.error(`[/message] Active sessions:`, Array.from(transports.keys()));
+        res.status(404).json({ ok: false, error: 'Session not found' });
+        return;
+      }
+
+      // Let the SSE transport handle the raw request/response
+      // The transport will read the raw stream directly
+      await transport.handlePostMessage(req, res);
+
+      const duration = Date.now() - startTime;
+      console.error(`[/message] Success: ${sessionId} (${duration}ms)`);
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : '';
+
+      console.error(`[/message] ERROR (${duration}ms):`, errorMsg);
+      console.error(`[/message] Stack trace:`, errorStack);
+
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, error: errorMsg });
+      }
+    }
+  });
+
+  // Debug endpoint for observability
+  app.get('/debug/mcp', (req, res) => {
+    const sessionIds = Array.from(transports.keys());
+    res.json({
+      ok: true,
+      activeSessions: sessionIds.length,
+      sessionIds,
+      tools: tools.map(t => t.name),
+      serverInfo: {
+        name: 'acitrack-mcp-server',
+        version: '1.0.0'
+      }
+    });
+  });
+
+  // ============================================================================
+  // NON-MCP ROUTES (can use JSON middleware on specific routes if needed)
+  // ============================================================================
 
   // Health check endpoint
   app.get('/health', (req, res) => {
@@ -214,75 +354,15 @@ async function startHttpServer() {
     res.sendFile(path.join(uiDistPath, 'index.html'));
   });
 
-  // Store active SSE transports by session ID
-  const transports = new Map<string, SSEServerTransport>();
-
-  // SSE endpoint for MCP communication
-  app.get('/sse', async (req, res) => {
-    // Create a new transport for this session
-    const transport = new SSEServerTransport('/message', res);
-
-    console.error(`SSE session started: ${transport.sessionId}`);
-
-    // Set up close handler
-    transport.onclose = () => {
-      transports.delete(transport.sessionId);
-      console.error(`SSE session closed: ${transport.sessionId}`);
-    };
-
-    // Store transport before connecting
-    transports.set(transport.sessionId, transport);
-
-    // Connect to server (this calls transport.start() internally)
-    await server.connect(transport);
-
-    console.error(`SSE session ready: ${transport.sessionId}`);
-  });
-
-  // POST endpoint for MCP messages
-  // IMPORTANT: Do NOT use express.json() or any body parser here
-  // The SSE transport needs to read the raw request stream
-  app.post('/message', async (req, res) => {
-    try {
-      // Accept sessionId from either header (preferred) or query parameter
-      const sessionId = (req.headers['x-session-id'] as string) || (req.query.sessionId as string);
-      const contentType = req.headers['content-type'] as string;
-
-      console.error(`/message request - sessionId: ${sessionId}, content-type: ${contentType}`);
-
-      if (!sessionId) {
-        res.status(400).json({ ok: false, error: 'Missing sessionId (provide via x-session-id header or ?sessionId=... query parameter)' });
-        return;
-      }
-
-      const transport = transports.get(sessionId);
-
-      if (!transport) {
-        console.error(`/message error - session not found: ${sessionId}`);
-        res.status(404).json({ ok: false, error: 'Session not found' });
-        return;
-      }
-
-      // Let the SSE transport handle the raw request/response
-      await transport.handlePostMessage(req, res);
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      const errorStack = error instanceof Error ? error.stack : '';
-      console.error(`/message error:`, errorMsg);
-      console.error(`Stack:`, errorStack);
-
-      if (!res.headersSent) {
-        res.status(500).json({ ok: false, error: errorMsg });
-      }
-    }
-  });
-
   // Start the server
   app.listen(PORT, () => {
-    console.error(`AciTrack MCP Server listening on port ${PORT}`);
+    console.error(`\n=== AciTrack MCP Server Started ===`);
+    console.error(`Port: ${PORT}`);
     console.error(`Health check: http://localhost:${PORT}/health`);
     console.error(`UI: http://localhost:${PORT}/ui/`);
     console.error(`MCP SSE endpoint: http://localhost:${PORT}/sse`);
+    console.error(`Debug endpoint: http://localhost:${PORT}/debug/mcp`);
+    console.error(`===================================\n`);
   });
 }
 
