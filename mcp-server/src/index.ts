@@ -219,18 +219,24 @@ async function startHttpServer() {
 
   // SSE endpoint for MCP communication
   app.get('/sse', async (req, res) => {
+    // Create a new transport for this session
     const transport = new SSEServerTransport('/message', res);
 
+    console.error(`SSE session started: ${transport.sessionId}`);
+
+    // Set up close handler
     transport.onclose = () => {
       transports.delete(transport.sessionId);
       console.error(`SSE session closed: ${transport.sessionId}`);
     };
 
+    // Store transport before connecting
     transports.set(transport.sessionId, transport);
-    console.error(`SSE session started: ${transport.sessionId}`);
 
-    await transport.start();
+    // Connect to server (this calls transport.start() internally)
     await server.connect(transport);
+
+    console.error(`SSE session ready: ${transport.sessionId}`);
   });
 
   // POST endpoint for MCP messages
