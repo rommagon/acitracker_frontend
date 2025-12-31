@@ -1,4 +1,3 @@
-import React from 'react';
 import type { TrendData } from '../types';
 
 interface TrendCardProps {

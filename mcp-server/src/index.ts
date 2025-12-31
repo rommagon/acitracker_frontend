@@ -7,8 +7,14 @@ import {
   ListToolsRequestSchema,
   Tool
 } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import { BackendClient } from './backend-client.js';
 import type { BriefingRequest, ExplainPaperRequest } from './types.js';
+
+const ExplainPaperRequestSchema = z.object({
+  paper_id: z.string().min(1),
+  question: z.string().optional()
+});
 
 const server = new Server(
   {
@@ -118,7 +124,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (name === 'explain_paper') {
-      const { paper_id, question } = args as ExplainPaperRequest;
+      const parsed = ExplainPaperRequestSchema.safeParse(args);
+
+      if (!parsed.success) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                type: 'acitrack.error.v1',
+                error: `Invalid explain_paper request: ${parsed.error.message}`,
+                tool: name
+              }, null, 2)
+            }
+          ],
+          isError: true
+        };
+      }
+
+      const { paper_id, question } = parsed.data as ExplainPaperRequest;
 
       const explanation = await backendClient.explainPaper(paper_id, question);
 

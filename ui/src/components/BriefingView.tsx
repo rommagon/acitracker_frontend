@@ -1,4 +1,3 @@
-import React from 'react';
 import { MetricTile } from './MetricTile';
 import { MustReadCard } from './MustReadCard';
 import { TrendCard } from './TrendCard';

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useOpenAiGlobal } from './hooks/useOpenAiGlobal';
 import { BriefingView } from './components/BriefingView';
 import { ExplainPaperView } from './components/ExplainPaperView';

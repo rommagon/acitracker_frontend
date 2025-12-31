@@ -1,5 +1,3 @@
-import React from 'react';
-
 interface ErrorStateProps {
   error: string;
   theme?: 'light' | 'dark';

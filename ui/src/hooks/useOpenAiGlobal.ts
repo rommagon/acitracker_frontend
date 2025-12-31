@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import type { OpenAIGlobals, WidgetState } from '../types';
+import type { WidgetState } from '../types';
 
 export function useOpenAiGlobal() {
   const [toolOutput, setToolOutput] = useState<any>(null);

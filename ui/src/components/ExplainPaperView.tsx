@@ -1,4 +1,3 @@
-import React from 'react';
 import type { ExplainPaperData } from '../types';
 
 interface ExplainPaperViewProps {
