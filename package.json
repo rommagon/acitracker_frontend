@@ -1,0 +1,28 @@
+{
+  "name": "acitracker-frontend",
+  "version": "1.0.0",
+  "description": "AciTrack OpenAI ChatGPT integration",
+  "private": true,
+  "workspaces": [
+    "mcp-server",
+    "ui"
+  ],
+  "scripts": {
+    "install:all": "npm install && cd mcp-server && npm install && cd ../ui && npm install",
+    "build:server": "cd mcp-server && npm run build",
+    "build:ui": "cd ui && npm run build",
+    "build": "npm run build:server && npm run build:ui",
+    "dev:server": "cd mcp-server && npm run dev",
+    "dev:ui": "cd ui && npm run dev",
+    "start:server": "cd mcp-server && npm start"
+  },
+  "keywords": [
+    "acitrack",
+    "mcp",
+    "openai",
+    "chatgpt",
+    "research"
+  ],
+  "author": "",
+  "license": "MIT"
+}
